@@ -1,32 +1,45 @@
-require('dotenv').config(); // Charger les variables d'environnement
+require('dotenv').config();
 const express = require('express');
 const path = require('path');
-const session = require('express-session');
+const session = require('express-session'); // Importation de express-session
+const SQLiteStore = require('connect-sqlite3')(session);
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const passport = require('passport');
+const RedisStore = require('connect-redis')(session);
+const redis = require('redis');
 const DiscordStrategy = require('passport-discord').Strategy;
-
 const db = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Charger les variables sensibles depuis l'environnement
-const { CLIENT_ID, CLIENT_SECRET, CALLBACK_URL, SESSION_SECRET } = process.env;
+// Charger les variables sensibles
+const { CLIENT_ID, CLIENT_SECRET, CALLBACK_URL, SESSION_SECRET, REDIS_URL } = process.env;
 
-// --- Configuration de Helmet ---
-// Helmet ajoute plusieurs en-têtes de sécurité par défaut
+// Choix du store de session : utiliser RedisStore si REDIS_URL est défini, sinon SQLiteStore
+let sessionStore;
+if (REDIS_URL) {
+  const redisClient = redis.createClient({
+    url: REDIS_URL, // Exemple : redis://localhost:6379
+  });
+  redisClient.on('error', (err) => console.error('Erreur Redis:', err));
+  sessionStore = new RedisStore({ client: redisClient });
+} else {
+  sessionStore = new SQLiteStore({
+    db: 'sessions.sqlite',
+    dir: './data', // Dossier où sera stockée la base de données de sessions
+  });
+}
+
+// Configuration de Helmet
 app.use(helmet());
-
-// Configuration d'une Content Security Policy (CSP) personnalisée
-// Adaptez les valeurs en fonction de vos besoins (ici on autorise self et le domaine Discord pour les images)
 app.use(
   helmet.contentSecurityPolicy({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"], // 'unsafe-inline' peut être nécessaire pour certains styles, mais à limiter si possible
+      styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "https://cdn.discordapp.com"],
       connectSrc: ["'self'"],
       fontSrc: ["'self'"],
@@ -36,26 +49,27 @@ app.use(
   })
 );
 
-// --- Limitation du nombre de requêtes ---
-// Pour éviter les abus, nous limitons le nombre de requêtes par IP
+// Limitation des requêtes
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limite à 100 requêtes par fenêtre
+  max: 100,
 });
 app.use(limiter);
 
-// --- Configuration des middlewares ---
+// Middlewares pour parser le corps des requêtes
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
+// Utilisation du store de session configuré (Redis ou SQLite)
 app.use(
   session({
+    store: sessionStore,
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === 'production', // Cookies sécurisés en production (HTTPS obligatoire)
-      httpOnly: true, // Empêche l'accès côté client via JavaScript
+      secure: process.env.NODE_ENV === 'production', // Assurez-vous d'utiliser HTTPS en production
+      httpOnly: true,
       maxAge: 1000 * 60 * 60 * 24, // 1 jour
     },
   })
@@ -64,7 +78,7 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-// --- Configuration de la stratégie Discord ---
+// Configuration de la stratégie Discord
 passport.use(
   new DiscordStrategy(
     {
@@ -100,7 +114,7 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
-// --- Middleware pour protéger les routes ---
+// Middleware pour protéger les routes
 function ensureAuthenticated(req, res, next) {
   if (req.isAuthenticated && req.isAuthenticated()) {
     return next();
@@ -108,17 +122,16 @@ function ensureAuthenticated(req, res, next) {
   res.redirect('/login.html');
 }
 
-// --- Servir les fichiers statiques ---
+// Servir les fichiers statiques
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- Routes d'authentification via Discord ---
+// Routes d'authentification via Discord
 app.get('/auth/discord', passport.authenticate('discord'));
 
 app.get(
   '/auth/discord/callback',
   passport.authenticate('discord', { failureRedirect: '/login.html' }),
   (req, res) => {
-    // Optionnel : stocker l'ID utilisateur dans un cookie
     res.cookie('user_id', req.user.id, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -127,7 +140,6 @@ app.get(
   }
 );
 
-// Route principale (page index)
 app.get('/', ensureAuthenticated, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
