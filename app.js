@@ -1,12 +1,12 @@
 require('dotenv').config();
 const express = require('express');
+const session = require('express-session');
 const path = require('path');
-const session = require('express-session'); // Importation de express-session
 const SQLiteStore = require('connect-sqlite3')(session);
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const passport = require('passport');
-const RedisStore = require('connect-redis')(session);
+const RedisStore = require('connect-redis').default;
 const redis = require('redis');
 const DiscordStrategy = require('passport-discord').Strategy;
 const db = require('./db');
@@ -17,9 +17,10 @@ const PORT = process.env.PORT || 3000;
 // Charger les variables sensibles
 const { CLIENT_ID, CLIENT_SECRET, CALLBACK_URL, SESSION_SECRET, REDIS_URL } = process.env;
 
-// Choix du store de session : utiliser RedisStore si REDIS_URL est défini, sinon SQLiteStore
+// Choix du store de session : si REDIS_URL est défini, on utilise RedisStore, sinon SQLiteStore
 let sessionStore;
 if (REDIS_URL) {
+  // Création du client Redis
   const redisClient = redis.createClient({
     url: REDIS_URL, // Exemple : redis://localhost:6379
   });
@@ -28,7 +29,7 @@ if (REDIS_URL) {
 } else {
   sessionStore = new SQLiteStore({
     db: 'sessions.sqlite',
-    dir: './data', // Dossier où sera stockée la base de données de sessions
+    dir: './data', // dossier où sera stockée la base de données de sessions
   });
 }
 
@@ -60,7 +61,7 @@ app.use(limiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Utilisation du store de session configuré (Redis ou SQLite)
+// Configuration des sessions avec le store choisi (RedisStore ou SQLiteStore)
 app.use(
   session({
     store: sessionStore,
@@ -68,7 +69,7 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === 'production', // Assurez-vous d'utiliser HTTPS en production
+      secure: process.env.NODE_ENV === 'production', // nécessite HTTPS en prod
       httpOnly: true,
       maxAge: 1000 * 60 * 60 * 24, // 1 jour
     },
