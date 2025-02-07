@@ -277,10 +277,11 @@ app.post('/api/ajouter-jeu', ensureAuthenticated, async (req, res) => {
 });
 
 app.post('/api/supprimer-jeu', ensureAuthenticated, async (req, res) => {
-  const { jeu } = req.body;
+  let { jeu } = req.body;
   if (!jeu) {
     return res.status(400).json({ error: 'Le nom du jeu est requis.' });
   }
+  jeu = jeu.trim().toLowerCase();
   try {
     const jeuId = await db.getJeuIdByName(jeu);
     if (!jeuId) {

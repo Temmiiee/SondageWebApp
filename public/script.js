@@ -178,10 +178,11 @@ class GameManager {
 
   async handleGameDeletion(gameName) {
     try {
+      const normalizedGameName = gameName.trim().toLowerCase();
       const response = await fetch('/api/supprimer-jeu', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jeu: gameName })
+        body: JSON.stringify({ jeu: normalizedGameName })
       });
       if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
       await this.loadData();
@@ -189,6 +190,6 @@ class GameManager {
       console.error('Erreur lors de la suppression du jeu :', error);
     }
   }
-}
+}  
 
 document.addEventListener('DOMContentLoaded', () => new GameManager());
