@@ -21,6 +21,11 @@ class GameManager {
   }
 
   initChart() {
+    const ctx = this.elements.statsChart.getContext('2d');
+    if (!ctx) {
+      console.error('Canvas context non trouvé');
+      return;
+    }
     this.chart = new Chart(this.elements.statsChart.getContext('2d'), {
       type: 'doughnut',
       data: {

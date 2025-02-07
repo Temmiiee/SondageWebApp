@@ -1,153 +1,132 @@
-// db.js
-import { Redis } from '@upstash/redis';
+import Redis from 'ioredis';
 import dotenv from 'dotenv';
 dotenv.config();
 
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
+// Configuration Redis
+const redis = new Redis(
+  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
+    ? `rediss://default:${process.env.UPSTASH_REDIS_REST_TOKEN}@${process.env.UPSTASH_REDIS_REST_URL.replace('https://', '')}:6379`
+    : process.env.REDIS_URL,
+  {
+    tls: { rejectUnauthorized: false },
+    retryStrategy: (times) => Math.min(times * 500, 5000)
+  }
+);
 
-// Fonction de normalisation d'un nom de jeu
-function normalizeGameName(name) {
-  let normalized = name.toLowerCase();
-  normalized = normalized.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // Retire les accents
-  normalized = normalized.replace(/[^a-z0-9]/g, ''); // Supprime les caractères spéciaux
-  normalized = normalized.replace(/(.)\1+/g, '$1'); // Supprime les répétitions de lettres
-  return normalized;
-}
+// Helpers
+const handleRedis = async (operation) => {
+  try {
+    return await operation();
+  } catch (error) {
+    console.error('Erreur Redis:', error);
+    throw error;
+  }
+};
 
-/**
- * Ajoute un jeu s'il n'existe pas déjà (comparaison "floue")
- * ou retourne l'ID du jeu existant.
- */
+const normalizeGameName = (name) => 
+  name.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .trim();
+
+// Fonctions DB
 export async function addOrGetJeu(jeuNom) {
-  const norm = normalizeGameName(jeuNom);
-  const existingGameId = await redis.hget('games:map', norm);
-  if (existingGameId) {
-    return existingGameId;
-  } else {
-    const gameId = await redis.incr('games:id'); // Génère un nouvel id
-    await redis.hset(`game:${gameId}`, { nom: jeuNom });
-    await redis.hset('games:map', norm, gameId);
-    await redis.zadd('games:votes', { score: 0, member: String(gameId) });
+  return handleRedis(async () => {
+    const norm = normalizeGameName(jeuNom);
+    const existingId = await redis.hget('games:map', norm);
+    if (existingId) return existingId;
+
+    const gameId = await redis.incr('games:id');
+    await redis.multi()
+      .hset(`game:${gameId}`, 'nom', jeuNom)
+      .hset('games:map', norm, gameId)
+      .zadd('games:votes', 0, gameId)
+      .exec();
     return gameId;
-  }
+  });
 }
 
-/**
- * Recherche l'ID d'un jeu par son nom (comparaison floue).
- */
-export async function getJeuIdByName(jeuNom) {
-  const norm = normalizeGameName(jeuNom);
-  const gamesMap = (await redis.hgetall('games:map')) || {};
-  for (const key in gamesMap) {
-    if (key.startsWith(norm) || norm.startsWith(key)) {
-      return gamesMap[key];
-    }
-  }
-  return null;
+export async function getJeuId(nomJeu) {
+  return handleRedis(() => 
+    redis.hget('games:map', normalizeGameName(nomJeu))
+  );
 }
 
-/**
- * Récupère un utilisateur par son identifiant.
- */
 export async function getUserById(id) {
-  const user = await redis.hgetall(`user:${id}`);
-  return user && Object.keys(user).length > 0 ? user : null;
+  return handleRedis(async () => {
+    const user = await redis.hgetall(`user:${id}`);
+    return Object.keys(user).length ? user : null;
+  });
 }
 
-/**
- * Ajoute ou met à jour un utilisateur.
- */
-export async function addOrUpdateUser(user) {
-  await redis.hset(`user:${user.id}`, { username: user.username, avatar: user.avatar });
-  return user;
+export async function addOrUpdateUser({ id, username, avatar }) {
+  return handleRedis(async () => {
+    await redis.hset(`user:${id}`, { 
+      username: username, 
+      avatar: avatar || 'default_avatar'
+    });
+    
+    // Retourne un objet utilisateur brut (sans méthodes)
+    return { 
+      id: String(id),
+      username, 
+      avatar 
+    };
+  });
 }
 
-/**
- * Ajoute un vote pour un utilisateur pour un jeu donné.
- */
 export async function insertVote(userId, jeuId) {
-  const added = await redis.sadd(`user:${userId}:games`, jeuId);
-  if (added) {
-    await redis.zincrby('games:votes', 1, jeuId);
-  }
+  return handleRedis(() => 
+    redis.multi()
+      .sadd(`user:${userId}:games`, jeuId)
+      .zincrby('games:votes', 1, jeuId)
+      .exec()
+  );
 }
 
-/**
- * Supprime le vote d'un utilisateur pour un jeu donné.
- */
 export async function deleteVoteForUser(userId, jeuId) {
-  const removed = await redis.srem(`user:${userId}:games`, jeuId);
-  if (removed) {
-    await redis.zincrby('games:votes', -1, jeuId);
-  }
+  return handleRedis(() => 
+    redis.multi()
+      .srem(`user:${userId}:games`, jeuId)
+      .zincrby('games:votes', -1, jeuId)
+      .exec()
+  );
 }
 
-/**
- * Récupère la liste des jeux votés par un utilisateur.
- */
 export async function getUserGames(userId) {
-  const gameIds = await redis.smembers(`user:${userId}:games`);
-  const games = [];
-  for (let id of gameIds) {
-    const game = await redis.hgetall(`game:${id}`);
-    if (game && game.nom) {
-      games.push(game.nom);
-    }
-  }
-  return games;
+  return handleRedis(async () => {
+    const gameIds = await redis.smembers(`user:${userId}:games`);
+    const pipeline = redis.pipeline();
+    gameIds.forEach(id => pipeline.hget(`game:${id}`, 'nom'));
+    return (await pipeline.exec()).map(([, nom]) => nom).filter(Boolean);
+  });
 }
 
-/**
- * Récupère tous les jeux enregistrés.
- */
 export async function getAllJeux() {
-  const map = (await redis.hgetall('games:map')) || {};
-  const jeux = [];
-  for (let norm in map) {
-    const gameId = map[norm];
-    const game = await redis.hgetall(`game:${gameId}`);
-    if (game && game.nom) {
-      jeux.push(game.nom);
-    }
-  }
-  return jeux;
+  return handleRedis(async () => {
+    const gamesMap = await redis.hgetall('games:map');
+    const pipeline = redis.pipeline();
+    Object.values(gamesMap).forEach(id => pipeline.hget(`game:${id}`, 'nom'));
+    return (await pipeline.exec()).map(([, nom]) => nom).filter(Boolean);
+  });
 }
 
-/**
- * Récupère les statistiques globales (nom du jeu et nombre de votes).
- */
 export async function getGlobalStatistics() {
-  // Récupère tous les jeux avec leurs scores
-  const gameVotes = await redis.zrange('games:votes', 0, -1, { withScores: true });
-
-  const stats = [];
-  for (let i = 0; i < gameVotes.length; i += 2) {
-    const gameId = gameVotes[i];
-    const votes = parseInt(gameVotes[i + 1], 10);
-
-    // Récupère le nom du jeu correspondant à l'ID
-    const gameData = await redis.hgetall(`game:${gameId}`);
-    if (gameData.nom) {
-      stats.push({ nom: gameData.nom, votes });
+  return handleRedis(async () => {
+    const votes = await redis.zrange('games:votes', 0, -1, 'WITHSCORES');
+    const stats = [];
+    
+    for (let i = 0; i < votes.length; i += 2) {
+      const gameId = votes[i];
+      const score = parseInt(votes[i + 1], 10);
+      const nom = await redis.hget(`game:${gameId}`, 'nom');
+      if (nom) stats.push({ nom, votes: score });
     }
-  }
-
-  return stats;
+    
+    return stats;
+  });
 }
 
-/**
- * Supprime tous les votes d'un utilisateur.
- */
-export async function deleteAllVotesForUser(userId) {
-  const gameIds = await redis.smembers(`user:${userId}:games`);
-  for (let id of gameIds) {
-    await redis.srem(`user:${userId}:games`, id);
-    await redis.zincrby('games:votes', -1, id);
-  }
-}
-
-// Alias pour compatibilité
 export const getStatistiques = getGlobalStatistics;

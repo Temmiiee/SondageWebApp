@@ -1,4 +1,3 @@
-// app.js (ESM)
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -11,13 +10,13 @@ const SQLiteStore = SQLiteStoreFactory(session);
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import passport from 'passport';
-import { createClient } from 'redis';
-import { RedisStore } from 'connect-redis';
+import Redis from 'ioredis';
+import connectRedis from 'connect-redis';
 import { Strategy as DiscordStrategy } from 'passport-discord';
 import * as db from './db.js';
 import { fileURLToPath } from 'url';
 
-// Pour ESM, définir __dirname
+// Configuration ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -25,153 +24,119 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 app.set('trust proxy', 1);
 
-// Variables d'environnement
-const {
-  CLIENT_ID,
-  CLIENT_SECRET,
-  CALLBACK_URL,
-  SESSION_SECRET,
-  REDIS_URL,
-  UPSTASH_REDIS_REST_URL,
-  UPSTASH_REDIS_REST_TOKEN,
-} = process.env;
+// Configuration Redis
+const redisClient = new Redis(
+  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
+    ? `rediss://default:${process.env.UPSTASH_REDIS_REST_TOKEN}@${process.env.UPSTASH_REDIS_REST_URL.replace('https://', '')}:6379`
+    : process.env.REDIS_URL,
+  {
+    tls: { rejectUnauthorized: false },
+    retryStrategy: (times) => Math.min(times * 500, 5000)
+  }
+);
 
-if (!SESSION_SECRET) {
-  console.error("SESSION_SECRET n'est pas défini dans l'environnement.");
-  process.exit(1);
-}
-
-// Construction du client Redis (Upstash ou autre)
-let redisClient;
-if (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN) {
-  const upstashUrl = UPSTASH_REDIS_REST_URL.replace(
-    /^https:\/\//,
-    `rediss://default:${UPSTASH_REDIS_REST_TOKEN}@`
-  );
-  redisClient = createClient({
-    url: upstashUrl,
-    socket: { tls: true, rejectUnauthorized: false },
-  });
-} else if (REDIS_URL) {
-  redisClient = createClient({
-    url: REDIS_URL,
-    socket: { tls: true, rejectUnauthorized: false },
-  });
-}
-
-// Définition du store des sessions
+// Configuration des sessions
+const RedisStore = connectRedis(session);
 let sessionStore;
-if (redisClient) {
-  redisClient.connect().catch(console.error);
-  redisClient.on('error', (err) => console.error('Erreur Redis:', err));
-  sessionStore = new RedisStore({ client: redisClient });
+
+if (redisClient.status === 'ready') {
+  sessionStore = new RedisStore({
+    client: redisClient,
+    prefix: 'sess:',
+    disableTouch: true
+  });
 } else {
   const dataDir = path.join(__dirname, 'data');
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
   sessionStore = new SQLiteStore({ db: 'sessions.sqlite', dir: dataDir });
 }
 
-// Helmet et Content Security Policy
-app.use(helmet());
-app.use(
-  helmet.contentSecurityPolicy({
+// Middlewares de sécurité
+app.use(helmet({
+  contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: [
-        "'self'",
-        "https://cdn.jsdelivr.net",
-        "'unsafe-inline'",
-        "'unsafe-eval'"
-      ],
+      scriptSrc: ["'self'", "https://cdn.jsdelivr.net", "'unsafe-inline'", "'unsafe-eval'"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
-      imgSrc: ["'self'", "https://cdn.discordapp.com"],
-      connectSrc: ["'self'"],
+      imgSrc: ["'self'", "https://cdn.discordapp.com", "data:", "https://*.upstash.io"],
+      connectSrc: ["'self'", "https://*.upstash.io", "https://discord.com"],
       fontSrc: ["'self'", "https://cdn.jsdelivr.net"],
-      objectSrc: ["'none'"],
-      upgradeInsecureRequests: [],
-    },
-  })
-);
+      frameSrc: ["'self'", "https://discord.com"],
+      objectSrc: ["'none'"]
+    }
+  }
+}));
 
-app.use((req, res, next) => {
-  res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'self'; " +
-      "script-src 'self' https://cdn.jsdelivr.net; " +
-      "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
-      "img-src 'self' https://cdn.discordapp.com; " +
-      "connect-src 'self'; " +
-      "font-src 'self' https://cdn.jsdelivr.net; " +
-      "object-src 'none'"
-  );
-  next();
-});
-
-// Limitation des requêtes
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-});
-app.use(limiter);
-
-// Parsing JSON et urlencoded
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+app.use(session({
+  store: sessionStore,
+  secret: process.env.SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  unset: 'destroy',
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: 86400000
+  }
+}));
 
-// Sessions
-app.use(
-  session({
-    store: sessionStore,
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: process.env.NODE_ENV === 'production',
-      httpOnly: true,
-      maxAge: 1000 * 60 * 60 * 24,
-    },
-  })
-);
-
+// Configuration Passport
 app.use(passport.initialize());
 app.use(passport.session());
+passport.use(new DiscordStrategy({
+  clientID: process.env.CLIENT_ID,
+  clientSecret: process.env.CLIENT_SECRET,
+  callbackURL: process.env.CALLBACK_URL,
+  scope: ['identify'],
+  passReqToCallback: true
+}, async (req, accessToken, refreshToken, profile, done) => {
+  try {
+    console.log('Profile complet:', profile);
+    
+    const user = await db.addOrUpdateUser({
+      id: profile.id,
+      username: profile.username,
+      avatar: profile.avatar || profile.id
+    });
 
-// Stratégie Discord
-passport.use(
-  new DiscordStrategy(
-    {
-      clientID: CLIENT_ID,
-      clientSecret: CLIENT_SECRET,
-      callbackURL: CALLBACK_URL,
-      scope: ['identify'],
-    },
-    async (accessToken, refreshToken, profile, done) => {
-      try {
-        const userData = {
-          id: profile.id,
-          username: profile.username,
-          avatar: profile.avatar,
-        };
-        const user = await db.addOrUpdateUser(userData);
-        return done(null, user);
-      } catch (err) {
-        console.error("Erreur dans la stratégie Discord :", err);
-        return done(err);
-      }
-    }
-  )
-);
+    console.log('Utilisateur créé:', user);
+    done(null, user);
+  } catch (error) {
+    console.error('Erreur auth Discord:', error);
+    done(error);
+  }
+}));
 
+// Sérialisation
 passport.serializeUser((user, done) => {
-  done(null, user.id);
+  if (!user?.id) {
+    return done(new Error('User ID manquant'));
+  }
+  done(null, user.id); // Stocke uniquement l'ID
 });
+
+// Désérialisation
 passport.deserializeUser(async (id, done) => {
   try {
     const user = await db.getUserById(id);
-    done(null, user);
-  } catch (err) {
-    done(err);
+    if (!user) return done(new Error('Utilisateur non trouvé'));
+    done(null, {
+      id: String(id), // Conversion explicite
+      username: user.username,
+      avatar: user.avatar
+    });
+  } catch (error) {
+    done(error);
   }
+});
+
+app.use((req, res, next) => {
+  console.log('Session actuelle:', req.session);
+  console.log('Utilisateur auth:', req.user);
+  next();
 });
 
 // Middleware d'authentification
@@ -278,19 +243,19 @@ app.post('/api/ajouter-jeu', ensureAuthenticated, async (req, res) => {
 
 app.post('/api/supprimer-jeu', ensureAuthenticated, async (req, res) => {
   const { jeu } = req.body;
-  if (!jeu) {
-    return res.status(400).json({ error: 'Le nom du jeu est requis.' });
-  }
   try {
     const jeuId = await db.getJeuId(jeu);
+    
     if (!jeuId) {
-      return res.status(404).json({ error: 'Jeu non trouvé.' });
+      return res.status(404).json({ error: 'Jeu non trouvé' });
     }
+
     await db.deleteVoteForUser(req.user.id, jeuId);
     res.json({ message: 'Jeu supprimé avec succès.' });
+    
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Erreur lors de la suppression du jeu.' });
+    console.error('Erreur suppression:', error);
+    res.status(500).json({ error: 'Erreur technique lors de la suppression' });
   }
 });
 
