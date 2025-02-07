@@ -276,7 +276,6 @@ app.post('/api/ajouter-jeu', ensureAuthenticated, async (req, res) => {
   }
 });
 
-// Supprimer un jeu de la liste de l'utilisateur
 app.post('/api/supprimer-jeu', ensureAuthenticated, async (req, res) => {
   const { jeu } = req.body;
   if (!jeu) {
