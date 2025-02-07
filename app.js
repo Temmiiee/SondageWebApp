@@ -2,10 +2,12 @@ require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
+const fs = require('fs');
 const SQLiteStore = require('connect-sqlite3')(session);
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const passport = require('passport');
+// Pour les versions récentes de connect-redis, utilisez .default
 const RedisStore = require('connect-redis').default;
 const redis = require('redis');
 const DiscordStrategy = require('passport-discord').Strategy;
@@ -20,16 +22,26 @@ const { CLIENT_ID, CLIENT_SECRET, CALLBACK_URL, SESSION_SECRET, REDIS_URL } = pr
 // Choix du store de session : si REDIS_URL est défini, on utilise RedisStore, sinon SQLiteStore
 let sessionStore;
 if (REDIS_URL) {
-  // Création du client Redis
+  // Création du client Redis en utilisant Upstash
   const redisClient = redis.createClient({
-    url: REDIS_URL, // Exemple : redis://localhost:6379
+    url: REDIS_URL, // Exemple : rediss://:YOUR_TOKEN@YOUR_HOST:YOUR_PORT
+    socket: {
+      tls: true,              // Active la connexion TLS pour "rediss://"
+      rejectUnauthorized: false,
+    },
   });
+  redisClient.connect().catch(console.error);
   redisClient.on('error', (err) => console.error('Erreur Redis:', err));
   sessionStore = new RedisStore({ client: redisClient });
 } else {
+  // Assurez-vous que le dossier 'data' existe pour SQLiteStore
+  const dataDir = path.join(__dirname, 'data');
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir);
+  }
   sessionStore = new SQLiteStore({
     db: 'sessions.sqlite',
-    dir: './data', // dossier où sera stockée la base de données de sessions
+    dir: dataDir,
   });
 }
 
@@ -69,7 +81,7 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === 'production', // nécessite HTTPS en prod
+      secure: process.env.NODE_ENV === 'production', // nécessite HTTPS en production
       httpOnly: true,
       maxAge: 1000 * 60 * 60 * 24, // 1 jour
     },
