@@ -1,230 +1,153 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+// db.js
+import { Redis } from '@upstash/redis';
+import dotenv from 'dotenv';
+dotenv.config();
 
-const dbFile = path.join(__dirname, 'data.db');
-const db = new sqlite3.Database(dbFile);
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
 
 // Fonction de normalisation d'un nom de jeu
 function normalizeGameName(name) {
   let normalized = name.toLowerCase();
-  // Supprime les accents
-  normalized = normalized.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  // Supprime tous les caractères non alphanumériques
-  normalized = normalized.replace(/[^a-z0-9]/g, '');
-  // Réduit les lettres répétées (ex: "dokkan" → "dokan")
-  normalized = normalized.replace(/(.)\1+/g, '$1');
+  normalized = normalized.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // Retire les accents
+  normalized = normalized.replace(/[^a-z0-9]/g, ''); // Supprime les caractères spéciaux
+  normalized = normalized.replace(/(.)\1+/g, '$1'); // Supprime les répétitions de lettres
   return normalized;
 }
 
-// Création des tables
-db.serialize(() => {
-  // Table des utilisateurs
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      username TEXT,
-      avatar TEXT
-    )
-  `);
+/**
+ * Ajoute un jeu s'il n'existe pas déjà (comparaison "floue")
+ * ou retourne l'ID du jeu existant.
+ */
+export async function addOrGetJeu(jeuNom) {
+  const norm = normalizeGameName(jeuNom);
+  const existingGameId = await redis.hget('games:map', norm);
+  if (existingGameId) {
+    return existingGameId;
+  } else {
+    const gameId = await redis.incr('games:id'); // Génère un nouvel id
+    await redis.hset(`game:${gameId}`, { nom: jeuNom });
+    await redis.hset('games:map', norm, gameId);
+    await redis.zadd('games:votes', { score: 0, member: String(gameId) });
+    return gameId;
+  }
+}
 
-  // Table des jeux
-  db.run(`
-    CREATE TABLE IF NOT EXISTS jeux (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      nom TEXT UNIQUE
-    )
-  `);
+/**
+ * Recherche l'ID d'un jeu par son nom (comparaison floue).
+ */
+export async function getJeuIdByName(jeuNom) {
+  const norm = normalizeGameName(jeuNom);
+  const gamesMap = (await redis.hgetall('games:map')) || {};
+  for (const key in gamesMap) {
+    if (key.startsWith(norm) || norm.startsWith(key)) {
+      return gamesMap[key];
+    }
+  }
+  return null;
+}
 
-  // Table des votes (association entre user et jeu)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS votes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT,
-      jeu_id INTEGER,
-      FOREIGN KEY (user_id) REFERENCES users(id),
-      FOREIGN KEY (jeu_id) REFERENCES jeux(id),
-      UNIQUE(user_id, jeu_id)
-    )
-  `);
-});
+/**
+ * Récupère un utilisateur par son identifiant.
+ */
+export async function getUserById(id) {
+  const user = await redis.hgetall(`user:${id}`);
+  return user && Object.keys(user).length > 0 ? user : null;
+}
 
-module.exports = {
-  // Gestion des utilisateurs
-  getUserByDiscordId: (id) => {
-    return new Promise((resolve, reject) => {
-      db.get('SELECT * FROM users WHERE id = ?', [id], (err, row) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(row);
-        }
-      });
-    });
-  },
+/**
+ * Ajoute ou met à jour un utilisateur.
+ */
+export async function addOrUpdateUser(user) {
+  await redis.hset(`user:${user.id}`, { username: user.username, avatar: user.avatar });
+  return user;
+}
 
-  addOrUpdateUser: (user) => {
-    return new Promise((resolve, reject) => {
-      // On essaie d'insérer l'utilisateur ou de le mettre à jour
-      db.run(
-        `INSERT INTO users(id, username, avatar) VALUES(?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET username = excluded.username, avatar = excluded.avatar`,
-        [user.id, user.username, user.avatar],
-        function (err) {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(user);
-          }
-        }
-      );
-    });
-  },
+/**
+ * Ajoute un vote pour un utilisateur pour un jeu donné.
+ */
+export async function insertVote(userId, jeuId) {
+  const added = await redis.sadd(`user:${userId}:games`, jeuId);
+  if (added) {
+    await redis.zincrby('games:votes', 1, jeuId);
+  }
+}
 
-  getUserById: (id) => {
-    return new Promise((resolve, reject) => {
-      db.get('SELECT * FROM users WHERE id = ?', [id], (err, row) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(row);
-        }
-      });
-    });
-  },
+/**
+ * Supprime le vote d'un utilisateur pour un jeu donné.
+ */
+export async function deleteVoteForUser(userId, jeuId) {
+  const removed = await redis.srem(`user:${userId}:games`, jeuId);
+  if (removed) {
+    await redis.zincrby('games:votes', -1, jeuId);
+  }
+}
 
-  getGlobalStatistics: () => {
-    return new Promise((resolve, reject) => {
-      const query = `
-        SELECT j.nom, COUNT(v.user_id) as votes
-        FROM jeux j
-        LEFT JOIN votes v ON j.id = v.jeu_id
-        GROUP BY j.nom
-        HAVING COUNT(v.user_id) > 0
-        ORDER BY votes DESC
-      `;
-      db.all(query, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-  },
+/**
+ * Récupère la liste des jeux votés par un utilisateur.
+ */
+export async function getUserGames(userId) {
+  const gameIds = await redis.smembers(`user:${userId}:games`);
+  const games = [];
+  for (let id of gameIds) {
+    const game = await redis.hgetall(`game:${id}`);
+    if (game && game.nom) {
+      games.push(game.nom);
+    }
+  }
+  return games;
+}
 
-  getUserGames: (userId) => {
-    return new Promise((resolve, reject) => {
-      const query = `
-        SELECT j.nom 
-        FROM votes v
-        JOIN jeux j ON v.jeu_id = j.id
-        WHERE v.user_id = ?
-      `;
-      db.all(query, [userId], (err, rows) => {
-        if (err) reject(err);
-        resolve(rows.map(r => r.nom));
-      });
-    });
-  },
+/**
+ * Récupère tous les jeux enregistrés.
+ */
+export async function getAllJeux() {
+  const map = (await redis.hgetall('games:map')) || {};
+  const jeux = [];
+  for (let norm in map) {
+    const gameId = map[norm];
+    const game = await redis.hgetall(`game:${gameId}`);
+    if (game && game.nom) {
+      jeux.push(game.nom);
+    }
+  }
+  return jeux;
+}
 
-  getAllJeux: () => {
-    return new Promise((resolve, reject) => {
-      db.all('SELECT nom FROM jeux', (err, rows) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(rows.map(row => row.nom));
-        }
-      });
-    });
-  },
+/**
+ * Récupère les statistiques globales (nom du jeu et nombre de votes).
+ */
+export async function getGlobalStatistics() {
+  // Récupère tous les jeux avec leurs scores
+  const gameVotes = await redis.zrange('games:votes', 0, -1, { withScores: true });
 
-  // Ajout ou récupération d'un jeu en fonction de la similarité de son nom
-  addOrGetJeu: (jeuNom) => {
-    return new Promise((resolve, reject) => {
-      const newNorm = normalizeGameName(jeuNom);
-      // On récupère tous les jeux existants
-      db.all('SELECT id, nom FROM jeux', (err, rows) => {
-        if (err) {
-          return reject(err);
-        }
-        for (let row of rows) {
-          const existingNorm = normalizeGameName(row.nom);
-          // Si l'un est préfixe de l'autre, on considère qu'ils représentent le même jeu
-          if (existingNorm.startsWith(newNorm) || newNorm.startsWith(existingNorm)) {
-            return resolve(row.id);
-          }
-        }
-        // Si aucun jeu similaire n'est trouvé, on l'ajoute
-        db.run('INSERT INTO jeux(nom) VALUES(?)', [jeuNom], function (err) {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(this.lastID); // Retourne l'ID du jeu nouvellement ajouté
-          }
-        });
-      });
-    });
-  },
+  const stats = [];
+  for (let i = 0; i < gameVotes.length; i += 2) {
+    const gameId = gameVotes[i];
+    const votes = parseInt(gameVotes[i + 1], 10);
 
-  // Recherche d'un jeu par son nom en utilisant la normalisation
-  getJeuIdByName: (jeuNom) => {
-    return new Promise((resolve, reject) => {
-      const newNorm = normalizeGameName(jeuNom);
-      db.all('SELECT id, nom FROM jeux', (err, rows) => {
-        if (err) {
-          return reject(err);
-        }
-        for (let row of rows) {
-          const existingNorm = normalizeGameName(row.nom);
-          if (existingNorm.startsWith(newNorm) || newNorm.startsWith(existingNorm)) {
-            return resolve(row.id);
-          }
-        }
-        resolve(null); // Aucun jeu trouvé
-      });
-    });
-  },
+    // Récupère le nom du jeu correspondant à l'ID
+    const gameData = await redis.hgetall(`game:${gameId}`);
+    if (gameData.nom) {
+      stats.push({ nom: gameData.nom, votes });
+    }
+  }
 
-  // Gestion des votes
-  deleteVoteForUser: (userId, jeuId) => {
-    return new Promise((resolve, reject) => {
-      db.run('DELETE FROM votes WHERE user_id = ? AND jeu_id = ?', [userId, jeuId], function (err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
-  },
+  return stats;
+}
 
-  insertVote: (user_id, jeuId) => {
-    return new Promise((resolve, reject) => {
-      db.run('INSERT OR IGNORE INTO votes(user_id, jeu_id) VALUES(?, ?)', [user_id, jeuId], function (err) {
-        if (err) {
-          reject(err);
-        } else {
-          resolve();
-        }
-      });
-    });
-  },
+/**
+ * Supprime tous les votes d'un utilisateur.
+ */
+export async function deleteAllVotesForUser(userId) {
+  const gameIds = await redis.smembers(`user:${userId}:games`);
+  for (let id of gameIds) {
+    await redis.srem(`user:${userId}:games`, id);
+    await redis.zincrby('games:votes', -1, id);
+  }
+}
 
-  // Statistiques
-  getStatistiques: () => {
-    return new Promise((resolve, reject) => {
-      const query = `
-        SELECT jeux.nom, COUNT(votes.jeu_id) as votes
-        FROM jeux
-        LEFT JOIN votes ON jeux.id = votes.jeu_id
-        GROUP BY jeux.nom
-        ORDER BY votes DESC
-      `;
-      db.all(query, (err, rows) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(rows);
-        }
-      });
-    });
-  }  
-};
+// Alias pour compatibilité
+export const getStatistiques = getGlobalStatistics;

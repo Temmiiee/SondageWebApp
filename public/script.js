@@ -1,3 +1,4 @@
+// script.js
 class GameManager {
   constructor() {
     this.initElements();
@@ -82,8 +83,6 @@ class GameManager {
   }
 
   renderUserGames(games) {
-    // Si games est un tableau de chaînes de caractères, le rendu est direct.
-    // Sinon, adaptez en fonction de la structure des objets retournés.
     this.elements.mesJeux.innerHTML = games.map(game => `
       <li class="list-group-item d-flex justify-content-between align-items-center">
         ${game}
@@ -98,46 +97,45 @@ class GameManager {
       .join('');
   }
 
-  updateChartData(stats) {
-    this.chart.data.labels = stats.map(s => s.nom);
-    this.chart.data.datasets[0].data = stats.map(s => s.votes);
-    this.chart.update();
-  }
-
   updateGameList(stats) {
-    this.elements.listeJeux.innerHTML = '';
+    this.elements.listeJeux.innerHTML = ''; // Vider la liste des jeux existants
+  
     stats.forEach(stat => {
       const li = document.createElement('li');
       li.classList.add('list-group-item');
       li.style.cursor = 'pointer';
       li.textContent = `${stat.nom} (${stat.votes} joueur${stat.votes > 1 ? 's' : ''})`;
+  
       li.addEventListener('click', () => {
         this.handleGameSubmissionFromList(stat.nom);
       });
+  
       this.elements.listeJeux.appendChild(li);
     });
   }
+  
+  updateChartData(stats) {
+    this.chart.data.labels = stats.map(s => s.nom);
+    this.chart.data.datasets[0].data = stats.map(s => s.votes);
+    this.chart.update();
+  }  
 
   setupEventListeners() {
-    // Affichage du formulaire d'ajout manuel
     this.elements.ajouterBtn.addEventListener('click', () => {
       this.elements.jeuForm.style.display = 'block';
     });
 
-    // Gestion de la soumission du formulaire
     this.elements.jeuForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       await this.handleGameSubmission();
     });
 
-    // Gestion de la suppression d'un jeu depuis la liste des jeux de l'utilisateur
     this.elements.mesJeux.addEventListener('click', async (e) => {
       if (e.target.classList.contains('btn-danger')) {
         await this.handleGameDeletion(e.target.dataset.game);
       }
     });
 
-    // Déconnexion
     this.elements.logoutBtn.addEventListener('click', () => {
       window.location.href = '/logout';
     });
@@ -164,7 +162,6 @@ class GameManager {
     }
   }
 
-  // Ajout d'un jeu via la liste cliquable
   async handleGameSubmissionFromList(gameName) {
     try {
       const response = await fetch('/api/ajouter-jeu', {
@@ -194,5 +191,4 @@ class GameManager {
   }
 }
 
-// Initialisation de l'application une fois le DOM chargé
 document.addEventListener('DOMContentLoaded', () => new GameManager());

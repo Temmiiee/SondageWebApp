@@ -1,24 +1,31 @@
-require('dotenv').config();
-const express = require('express');
-const session = require('express-session');
-const path = require('path');
-const fs = require('fs');
-const SQLiteStore = require('connect-sqlite3')(session);
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const passport = require('passport');
-const redis = require('redis');
-const RedisStore = require('connect-redis')(session); // Notez l'absence de .default
-const DiscordStrategy = require('passport-discord').Strategy;
-const db = require('./db');
+// app.js (ESM)
+import dotenv from 'dotenv';
+dotenv.config();
+
+import express from 'express';
+import session from 'express-session';
+import path from 'path';
+import fs from 'fs';
+import SQLiteStoreFactory from 'connect-sqlite3';
+const SQLiteStore = SQLiteStoreFactory(session);
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import passport from 'passport';
+import { createClient } from 'redis';
+import { RedisStore } from 'connect-redis';
+import { Strategy as DiscordStrategy } from 'passport-discord';
+import * as db from './db.js';
+import { fileURLToPath } from 'url';
+
+// Pour ESM, définir __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// Configure Express pour faire confiance au proxy (important derrière Render)
 app.set('trust proxy', 1);
 
-// Chargement des variables sensibles
+// Variables d'environnement
 const {
   CLIENT_ID,
   CLIENT_SECRET,
@@ -26,7 +33,7 @@ const {
   SESSION_SECRET,
   REDIS_URL,
   UPSTASH_REDIS_REST_URL,
-  UPSTASH_REDIS_REST_TOKEN
+  UPSTASH_REDIS_REST_TOKEN,
 } = process.env;
 
 if (!SESSION_SECRET) {
@@ -34,44 +41,37 @@ if (!SESSION_SECRET) {
   process.exit(1);
 }
 
-// Construction de l'URL Redis à utiliser.
-// Priorité aux variables Upstash si elles sont définies.
-let redisUrl = REDIS_URL;
+// Construction du client Redis (Upstash ou autre)
+let redisClient;
 if (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN) {
-  // Remplacer "https://" par "rediss://default:<token>@" pour la connexion sécurisée.
-  redisUrl = UPSTASH_REDIS_REST_URL.replace(
+  const upstashUrl = UPSTASH_REDIS_REST_URL.replace(
     /^https:\/\//,
     `rediss://default:${UPSTASH_REDIS_REST_TOKEN}@`
   );
+  redisClient = createClient({
+    url: upstashUrl,
+    socket: { tls: true, rejectUnauthorized: false },
+  });
+} else if (REDIS_URL) {
+  redisClient = createClient({
+    url: REDIS_URL,
+    socket: { tls: true, rejectUnauthorized: false },
+  });
 }
 
-// Choix du store de session : si une URL Redis est définie, on utilise RedisStore, sinon SQLiteStore
+// Définition du store des sessions
 let sessionStore;
-if (redisUrl) {
-  // Création du client Redis avec l'URL construite
-  const redisClient = redis.createClient({
-    url: redisUrl,
-    socket: {
-      tls: true,
-      rejectUnauthorized: false,
-    },
-  });
+if (redisClient) {
   redisClient.connect().catch(console.error);
   redisClient.on('error', (err) => console.error('Erreur Redis:', err));
   sessionStore = new RedisStore({ client: redisClient });
 } else {
-  // S'assurer que le dossier 'data' existe pour SQLiteStore
   const dataDir = path.join(__dirname, 'data');
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir);
-  }
-  sessionStore = new SQLiteStore({
-    db: 'sessions.sqlite',
-    dir: dataDir,
-  });
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
+  sessionStore = new SQLiteStore({ db: 'sessions.sqlite', dir: dataDir });
 }
 
-// Configuration de Helmet pour sécuriser les en-têtes HTTP
+// Helmet et Content Security Policy
 app.use(helmet());
 app.use(
   helmet.contentSecurityPolicy({
@@ -82,23 +82,36 @@ app.use(
       imgSrc: ["'self'", "https://cdn.discordapp.com"],
       connectSrc: ["'self'"],
       fontSrc: ["'self'", "https://cdn.jsdelivr.net"],
-      objectSrc: ["'none'"]
+      objectSrc: ["'none'"],
     },
   })
 );
+app.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; " +
+      "script-src 'self' https://cdn.jsdelivr.net; " +
+      "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
+      "img-src 'self' https://cdn.discordapp.com; " +
+      "connect-src 'self'; " +
+      "font-src 'self' https://cdn.jsdelivr.net; " +
+      "object-src 'none'"
+  );
+  next();
+});
 
-// Limitation des requêtes pour prévenir certains abus
+// Limitation des requêtes
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 100,
 });
 app.use(limiter);
 
-// Middleware pour parser le corps des requêtes
+// Parsing JSON et urlencoded
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Configuration des sessions
+// Sessions
 app.use(
   session({
     store: sessionStore,
@@ -106,9 +119,9 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === 'production', // Cookie sécurisé en production (HTTPS)
+      secure: process.env.NODE_ENV === 'production',
       httpOnly: true,
-      maxAge: 1000 * 60 * 60 * 24, // 1 jour
+      maxAge: 1000 * 60 * 60 * 24,
     },
   })
 );
@@ -116,7 +129,7 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Configuration de la stratégie Discord
+// Stratégie Discord
 passport.use(
   new DiscordStrategy(
     {
@@ -127,14 +140,12 @@ passport.use(
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
-        console.log("Profil Discord reçu :", profile);
         const userData = {
           id: profile.id,
           username: profile.username,
           avatar: profile.avatar,
         };
         const user = await db.addOrUpdateUser(userData);
-        console.log("Utilisateur mis à jour/créé :", user);
         return done(null, user);
       } catch (err) {
         console.error("Erreur dans la stratégie Discord :", err);
@@ -147,7 +158,6 @@ passport.use(
 passport.serializeUser((user, done) => {
   done(null, user.id);
 });
-
 passport.deserializeUser(async (id, done) => {
   try {
     const user = await db.getUserById(id);
@@ -157,15 +167,13 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
-// Middleware pour protéger les routes
+// Middleware d'authentification
 function ensureAuthenticated(req, res, next) {
-  if (req.isAuthenticated && req.isAuthenticated()) {
-    return next();
-  }
+  if (req.isAuthenticated && req.isAuthenticated()) return next();
   res.redirect('/login.html');
 }
 
-// Middleware pour protéger l'accès direct à /index.html
+// Protection de l'accès direct à /index.html
 app.use((req, res, next) => {
   if (req.path === '/index.html' && !(req.isAuthenticated && req.isAuthenticated())) {
     return res.redirect('/login.html');
@@ -173,17 +181,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// Servir les fichiers statiques (désactivation de l'index automatique)
+// Fichiers statiques (sans auto-index)
 app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 
-// Routes d'authentification via Discord
+// Routes d'authentification Discord
 app.get('/auth/discord', passport.authenticate('discord'));
-
 app.get(
   '/auth/discord/callback',
   passport.authenticate('discord', { failureRedirect: '/login.html' }),
   (req, res) => {
-    // Définir un cookie pour l'ID utilisateur (optionnel, car la session contient déjà cette info)
     res.cookie('user_id', req.user.id, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -192,7 +198,7 @@ app.get(
   }
 );
 
-// Route principale (accès restreint)
+// Route principale protégée
 app.get('/', ensureAuthenticated, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -200,22 +206,16 @@ app.get('/', ensureAuthenticated, (req, res) => {
 // Déconnexion
 app.get('/logout', (req, res, next) => {
   req.logout((err) => {
-    if (err) {
-      console.error(err);
-      return next(err);
-    }
+    if (err) return next(err);
     req.session.destroy((err) => {
-      if (err) {
-        console.error(err);
-      }
+      if (err) console.error(err);
       res.redirect('/login.html');
     });
   });
 });
 
-// --- API ---
+/** --- Routes API --- **/
 
-// Récupérer les jeux de l'utilisateur
 app.get('/api/jeux', ensureAuthenticated, async (req, res) => {
   try {
     const jeux = await db.getUserGames(req.user.id);
@@ -226,32 +226,26 @@ app.get('/api/jeux', ensureAuthenticated, async (req, res) => {
   }
 });
 
-// Récupérer tous les jeux
 app.get('/api/jeux/all', ensureAuthenticated, async (req, res) => {
   try {
     const jeux = await db.getAllJeux();
     res.json(jeux);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Erreur lors de la récupération des jeux.' });
+    res.status(500).json({ error: 'Erreur lors de la récupération de tous les jeux.' });
   }
 });
 
-// Enregistrer les votes (liste de jeux)
 app.post('/api/vote', ensureAuthenticated, async (req, res) => {
   const { jeux } = req.body;
   if (!jeux || !Array.isArray(jeux)) {
     return res.status(400).json({ error: 'Une liste de jeux est requise.' });
   }
   try {
-    // Suppression des votes précédents de l'utilisateur
-    await db.deleteVotesForUser(req.user.id);
+    await db.deleteAllVotesForUser(req.user.id);
     for (let jeu of jeux) {
-      const jeuNormalise = jeu.trim().toLowerCase();
-      if (jeuNormalise) {
-        const jeuId = await db.addOrGetJeu(jeuNormalise);
-        await db.insertVote(req.user.id, jeuId);
-      }
+      const jeuId = await db.addOrGetJeu(jeu);
+      await db.insertVote(req.user.id, jeuId);
     }
     res.json({ message: 'Vos jeux ont été mis à jour avec succès.' });
   } catch (error) {
@@ -260,7 +254,6 @@ app.post('/api/vote', ensureAuthenticated, async (req, res) => {
   }
 });
 
-// Ajouter un jeu à la liste de l'utilisateur
 app.post('/api/ajouter-jeu', ensureAuthenticated, async (req, res) => {
   const { jeu } = req.body;
   if (!jeu) {
@@ -295,7 +288,6 @@ app.post('/api/supprimer-jeu', ensureAuthenticated, async (req, res) => {
   }
 });
 
-// Supprimer un vote via l'ID du jeu
 app.delete('/api/vote/:jeuId', ensureAuthenticated, async (req, res) => {
   const jeuId = req.params.jeuId;
   try {
@@ -307,57 +299,36 @@ app.delete('/api/vote/:jeuId', ensureAuthenticated, async (req, res) => {
   }
 });
 
-// Récupérer les jeux de l'utilisateur (autre endpoint)
 app.get('/api/mes-jeux', ensureAuthenticated, async (req, res) => {
   try {
     const jeux = await db.getUserGames(req.user.id);
     res.json(jeux);
   } catch (error) {
-    res.status(500).json({ error: 'Erreur de récupération des jeux' });
+    console.error(error);
+    res.status(500).json({ error: 'Erreur de récupération des jeux.' });
   }
 });
 
-// Récupérer les statistiques globales (jeux avec votes)
+// Route pour récupérer les statistiques globales des jeux
 app.get('/api/statistiques', async (req, res) => {
   try {
     const stats = await db.getGlobalStatistics();
     res.json(stats);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Erreur statistiques' });
+    res.status(500).json({ error: 'Erreur statistiques.' });
   }
 });
 
-// Récupérer les informations de l'utilisateur connecté
 app.get('/api/user', ensureAuthenticated, async (req, res) => {
   try {
     const user = await db.getUserById(req.user.id);
-    const avatarURL = `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png`;
+    const avatarURL = `https://cdn.discordapp.com/avatars/${req.user.id}/${user.avatar}.png`;
     res.json({ ...user, avatarURL });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Erreur lors de la récupération des informations utilisateur.' });
   }
-});
-
-// Gestion des routes non définies (404)
-app.use((req, res) => {
-  res.status(404).json({ error: 'Route non trouvée' });
-});
-
-// Middleware pour forcer la CSP sur toutes les réponses, y compris pour les fichiers statiques
-app.use((req, res, next) => {
-  res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'self'; " +
-      "script-src 'self' https://cdn.jsdelivr.net; " +
-      "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
-      "img-src 'self' https://cdn.discordapp.com; " +
-      "connect-src 'self'; " +
-      "font-src 'self' https://cdn.jsdelivr.net; " +
-      "object-src 'none'"
-  );
-  next();
 });
 
 // Gestion centralisée des erreurs non capturées
