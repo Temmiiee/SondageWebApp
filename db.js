@@ -1,9 +1,20 @@
-// db.js
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
 const dbFile = path.join(__dirname, 'data.db');
 const db = new sqlite3.Database(dbFile);
+
+// Fonction de normalisation d'un nom de jeu
+function normalizeGameName(name) {
+  let normalized = name.toLowerCase();
+  // Supprime les accents
+  normalized = normalized.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  // Supprime tous les caractères non alphanumériques
+  normalized = normalized.replace(/[^a-z0-9]/g, '');
+  // Réduit les lettres répétées (ex: "dokkan" → "dokan")
+  normalized = normalized.replace(/(.)\1+/g, '$1');
+  return normalized;
+}
 
 // Création des tables
 db.serialize(() => {
@@ -96,7 +107,7 @@ module.exports = {
         else resolve(rows);
       });
     });
-  },  
+  },
 
   getUserGames: (userId) => {
     return new Promise((resolve, reject) => {
@@ -125,38 +136,52 @@ module.exports = {
     });
   },
 
+  // Ajout ou récupération d'un jeu en fonction de la similarité de son nom
   addOrGetJeu: (jeuNom) => {
     return new Promise((resolve, reject) => {
-      db.get('SELECT id FROM jeux WHERE nom = ?', [jeuNom], (err, row) => {
+      const newNorm = normalizeGameName(jeuNom);
+      // On récupère tous les jeux existants
+      db.all('SELECT id, nom FROM jeux', (err, rows) => {
         if (err) {
-          reject(err);
-        } else if (row) {
-          resolve(row.id); // Si le jeu existe déjà, on retourne son ID
-        } else {
-          // Si le jeu n'existe pas, on l'ajoute
-          db.run('INSERT INTO jeux(nom) VALUES(?)', [jeuNom], function (err) {
-            if (err) {
-              reject(err);
-            } else {
-              resolve(this.lastID); // Retourner l'ID du jeu nouvellement ajouté
-            }
-          });
+          return reject(err);
         }
+        for (let row of rows) {
+          const existingNorm = normalizeGameName(row.nom);
+          // Si l'un est préfixe de l'autre, on considère qu'ils représentent le même jeu
+          if (existingNorm.startsWith(newNorm) || newNorm.startsWith(existingNorm)) {
+            return resolve(row.id);
+          }
+        }
+        // Si aucun jeu similaire n'est trouvé, on l'ajoute
+        db.run('INSERT INTO jeux(nom) VALUES(?)', [jeuNom], function (err) {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(this.lastID); // Retourne l'ID du jeu nouvellement ajouté
+          }
+        });
       });
     });
   },
 
+  // Recherche d'un jeu par son nom en utilisant la normalisation
   getJeuIdByName: (jeuNom) => {
     return new Promise((resolve, reject) => {
-      db.get('SELECT id FROM jeux WHERE nom = ?', [jeuNom], (err, row) => {
+      const newNorm = normalizeGameName(jeuNom);
+      db.all('SELECT id, nom FROM jeux', (err, rows) => {
         if (err) {
-          reject(err);
-        } else {
-          resolve(row ? row.id : null); // Retourner l'ID si le jeu existe
+          return reject(err);
         }
+        for (let row of rows) {
+          const existingNorm = normalizeGameName(row.nom);
+          if (existingNorm.startsWith(newNorm) || newNorm.startsWith(existingNorm)) {
+            return resolve(row.id);
+          }
+        }
+        resolve(null); // Aucun jeu trouvé
       });
     });
-  },  
+  },
 
   // Gestion des votes
   deleteVoteForUser: (userId, jeuId) => {
@@ -169,7 +194,7 @@ module.exports = {
         }
       });
     });
-  },  
+  },
 
   insertVote: (user_id, jeuId) => {
     return new Promise((resolve, reject) => {
