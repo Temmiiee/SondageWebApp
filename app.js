@@ -15,19 +15,42 @@ const db = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Configurer Express pour faire confiance au proxy
+app.set('trust proxy', 1);
+
 // Chargement des variables sensibles
-const { CLIENT_ID, CLIENT_SECRET, CALLBACK_URL, SESSION_SECRET, REDIS_URL } = process.env;
+const {
+  CLIENT_ID,
+  CLIENT_SECRET,
+  CALLBACK_URL,
+  SESSION_SECRET,
+  REDIS_URL,
+  UPSTASH_REDIS_REST_URL,
+  UPSTASH_REDIS_REST_TOKEN
+} = process.env;
+
 if (!SESSION_SECRET) {
   console.error("SESSION_SECRET n'est pas défini dans l'environnement.");
   process.exit(1);
 }
 
-// Choix du store de session : si REDIS_URL est défini, on utilise RedisStore, sinon SQLiteStore
+// Construction de l'URL Redis à utiliser.
+// Priorité aux variables Upstash si elles sont définies.
+let redisUrl = REDIS_URL;
+if (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN) {
+  // Remplace "https://" par "rediss://default:<token>@" pour la connexion sécurisée.
+  redisUrl = UPSTASH_REDIS_REST_URL.replace(
+    /^https:\/\//,
+    `rediss://default:${UPSTASH_REDIS_REST_TOKEN}@`
+  );
+}
+
+// Choix du store de session : si une URL Redis est définie, on utilise RedisStore, sinon SQLiteStore
 let sessionStore;
-if (REDIS_URL) {
-  // Création du client Redis
+if (redisUrl) {
+  // Création du client Redis avec l'URL construite
   const redisClient = redis.createClient({
-    url: REDIS_URL, // Exemple : rediss://:YOUR_TOKEN@YOUR_HOST:YOUR_PORT
+    url: redisUrl,
     socket: {
       tls: true,
       rejectUnauthorized: false,
@@ -49,8 +72,6 @@ if (REDIS_URL) {
 }
 
 // Configuration de Helmet pour sécuriser les en-têtes HTTP
-app.use(helmet());
-// Configuration de Helmet (vous pouvez conserver votre configuration existante)
 app.use(helmet());
 app.use(
   helmet.contentSecurityPolicy({
