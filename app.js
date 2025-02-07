@@ -8,14 +8,14 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const passport = require('passport');
 const redis = require('redis');
-const RedisStore = require('connect-redis').default;
+const RedisStore = require('connect-redis')(session); // Notez l'absence de .default
 const DiscordStrategy = require('passport-discord').Strategy;
 const db = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Configurer Express pour faire confiance au proxy
+// Configure Express pour faire confiance au proxy (important derrière Render)
 app.set('trust proxy', 1);
 
 // Chargement des variables sensibles
@@ -38,7 +38,7 @@ if (!SESSION_SECRET) {
 // Priorité aux variables Upstash si elles sont définies.
 let redisUrl = REDIS_URL;
 if (UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN) {
-  // Remplace "https://" par "rediss://default:<token>@" pour la connexion sécurisée.
+  // Remplacer "https://" par "rediss://default:<token>@" pour la connexion sécurisée.
   redisUrl = UPSTASH_REDIS_REST_URL.replace(
     /^https:\/\//,
     `rediss://default:${UPSTASH_REDIS_REST_TOKEN}@`
@@ -347,12 +347,12 @@ app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
     "default-src 'self'; " +
-    "script-src 'self' https://cdn.jsdelivr.net; " +
-    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
-    "img-src 'self' https://cdn.discordapp.com; " +
-    "connect-src 'self'; " +
-    "font-src 'self' https://cdn.jsdelivr.net; " +
-    "object-src 'none'"
+      "script-src 'self' https://cdn.jsdelivr.net; " +
+      "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
+      "img-src 'self' https://cdn.discordapp.com; " +
+      "connect-src 'self'; " +
+      "font-src 'self' https://cdn.jsdelivr.net; " +
+      "object-src 'none'"
   );
   next();
 });
