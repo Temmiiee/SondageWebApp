@@ -277,18 +277,17 @@ app.post('/api/ajouter-jeu', ensureAuthenticated, async (req, res) => {
 });
 
 app.post('/api/supprimer-jeu', ensureAuthenticated, async (req, res) => {
-  let { jeu } = req.body;
+  const { jeu } = req.body;
   if (!jeu) {
     return res.status(400).json({ error: 'Le nom du jeu est requis.' });
   }
-  jeu = jeu.trim().toLowerCase();
   try {
-    const jeuId = await db.getJeuIdByName(jeu);
+    const jeuId = await db.getJeuId(jeu);
     if (!jeuId) {
       return res.status(404).json({ error: 'Jeu non trouvé.' });
     }
     await db.deleteVoteForUser(req.user.id, jeuId);
-    res.json({ message: 'Jeu supprimé avec succès de vos jeux.' });
+    res.json({ message: 'Jeu supprimé avec succès.' });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Erreur lors de la suppression du jeu.' });
