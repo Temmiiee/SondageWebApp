@@ -77,15 +77,22 @@ app.use(
   helmet.contentSecurityPolicy({
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "https://cdn.jsdelivr.net"],
+      scriptSrc: [
+        "'self'",
+        "https://cdn.jsdelivr.net",
+        "'unsafe-inline'",
+        "'unsafe-eval'"
+      ],
       styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
       imgSrc: ["'self'", "https://cdn.discordapp.com"],
       connectSrc: ["'self'"],
       fontSrc: ["'self'", "https://cdn.jsdelivr.net"],
       objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
     },
   })
 );
+
 app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
