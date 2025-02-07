@@ -127,14 +127,17 @@ passport.use(
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
+        console.log("Profil Discord reçu :", profile);
         const userData = {
           id: profile.id,
           username: profile.username,
           avatar: profile.avatar,
         };
         const user = await db.addOrUpdateUser(userData);
+        console.log("Utilisateur mis à jour/créé :", user);
         return done(null, user);
       } catch (err) {
+        console.error("Erreur dans la stratégie Discord :", err);
         return done(err);
       }
     }
