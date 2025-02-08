@@ -103,25 +103,28 @@ class GameManager {
   }
 
   updateGameList(stats) {
-    this.elements.listeJeux.innerHTML = ''; // Vider la liste des jeux existants
+    this.elements.listeJeux.innerHTML = '';
   
-    stats.forEach(stat => {
-      const li = document.createElement('li');
-      li.classList.add('list-group-item');
-      li.style.cursor = 'pointer';
-      li.textContent = `${stat.nom} (${stat.votes} joueur${stat.votes > 1 ? 's' : ''})`;
+    stats
+      .filter(stat => stat.votes > 0)
+      .forEach(stat => {
+        const li = document.createElement('li');
+        li.classList.add('list-group-item');
+        li.style.cursor = 'pointer';
+        li.textContent = `${stat.nom} (${stat.votes} joueur${stat.votes > 1 ? 's' : ''})`;
   
-      li.addEventListener('click', () => {
-        this.handleGameSubmissionFromList(stat.nom);
+        li.addEventListener('click', () => {
+          this.handleGameSubmissionFromList(stat.nom);
+        });
+  
+        this.elements.listeJeux.appendChild(li);
       });
-  
-      this.elements.listeJeux.appendChild(li);
-    });
   }
   
   updateChartData(stats) {
-    this.chart.data.labels = stats.map(s => s.nom);
-    this.chart.data.datasets[0].data = stats.map(s => s.votes);
+    const filteredStats = stats.filter(s => s.votes > 0);
+    this.chart.data.labels = filteredStats.map(s => s.nom);
+    this.chart.data.datasets[0].data = filteredStats.map(s => s.votes);
     this.chart.update();
   }  
 
