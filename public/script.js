@@ -1,4 +1,3 @@
-// script.js
 class GameManager {
   constructor() {
     this.initElements();
@@ -149,6 +148,28 @@ class GameManager {
     });
   }
 
+  async handleGameSubmission() {
+    const gameName = this.elements.jeuInput.value.trim();
+    if (!gameName) {
+      alert("Veuillez entrer un nom de jeu.");
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/ajouter-jeu', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jeu: gameName })
+      });
+      if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+      await this.loadData();
+      this.elements.jeuForm.style.display = 'none';
+      this.elements.jeuInput.value = '';
+    } catch (error) {
+      console.error("Erreur lors de l'ajout du jeu :", error);
+    }
+  }
+
   async handleGameSubmissionFromList(gameName) {
     // Vérifier si le jeu est déjà présent dans la liste utilisateur
     const isAlreadyAdded = Array.from(this.elements.mesJeux.querySelectorAll('li'))
@@ -159,20 +180,6 @@ class GameManager {
       return;
     }
   
-    try {
-      const response = await fetch('/api/ajouter-jeu', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jeu: gameName })
-      });
-      if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
-      await this.loadData();
-    } catch (error) {
-      console.error("Erreur lors de l'ajout depuis la liste :", error);
-    }
-  }  
-
-  async handleGameSubmissionFromList(gameName) {
     try {
       const response = await fetch('/api/ajouter-jeu', {
         method: 'POST',
