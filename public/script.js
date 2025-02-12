@@ -149,12 +149,16 @@ class GameManager {
     });
   }
 
-  async handleGameSubmission() {
-    const gameName = this.elements.jeuInput.value.trim();
-    if (!gameName) {
-      alert('Veuillez entrer un nom de jeu valide');
+  async handleGameSubmissionFromList(gameName) {
+    // Vérifier si le jeu est déjà présent dans la liste utilisateur
+    const isAlreadyAdded = Array.from(this.elements.mesJeux.querySelectorAll('li'))
+      .some(li => li.textContent.trim().toLowerCase().startsWith(gameName.trim().toLowerCase()));
+  
+    if (isAlreadyAdded) {
+      alert("Ce jeu est déjà dans votre liste !");
       return;
     }
+  
     try {
       const response = await fetch('/api/ajouter-jeu', {
         method: 'POST',
@@ -162,13 +166,11 @@ class GameManager {
         body: JSON.stringify({ jeu: gameName })
       });
       if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
-      this.elements.jeuInput.value = '';
-      this.elements.jeuForm.style.display = 'none';
       await this.loadData();
     } catch (error) {
-      console.error("Erreur lors de l'ajout du jeu :", error);
+      console.error("Erreur lors de l'ajout depuis la liste :", error);
     }
-  }
+  }  
 
   async handleGameSubmissionFromList(gameName) {
     try {

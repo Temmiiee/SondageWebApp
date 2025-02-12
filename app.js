@@ -232,7 +232,16 @@ app.post('/api/ajouter-jeu', ensureAuthenticated, async (req, res) => {
     return res.status(400).json({ error: 'Le nom du jeu est requis.' });
   }
   try {
+    // Récupère ou crée l'identifiant du jeu
     const jeuId = await db.addOrGetJeu(jeu);
+
+    // Vérifie si l'utilisateur a déjà voté pour ce jeu
+    const alreadyVoted = await db.hasUserVoted(req.user.id, jeuId);
+    if (alreadyVoted) {
+      return res.status(409).json({ error: 'Vous avez déjà ajouté ce jeu.' });
+    }
+
+    // Insère le vote si le jeu n'est pas déjà dans la liste de l'utilisateur
     await db.insertVote(req.user.id, jeuId);
     res.json({ message: 'Jeu ajouté avec succès à vos jeux.' });
   } catch (error) {
