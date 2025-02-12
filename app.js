@@ -94,7 +94,6 @@ passport.use(new DiscordStrategy({
   passReqToCallback: true
 }, async (req, accessToken, refreshToken, profile, done) => {
   try {
-    console.log('Profile complet:', profile);
     
     const user = await db.addOrUpdateUser({
       id: profile.id,
@@ -102,7 +101,6 @@ passport.use(new DiscordStrategy({
       avatar: profile.avatar || profile.id
     });
 
-    console.log('Utilisateur créé:', user);
     done(null, user);
   } catch (error) {
     console.error('Erreur auth Discord:', error);
@@ -134,8 +132,6 @@ passport.deserializeUser(async (id, done) => {
 });
 
 app.use((req, res, next) => {
-  console.log('Session actuelle:', req.session);
-  console.log('Utilisateur auth:', req.user);
   next();
 });
 

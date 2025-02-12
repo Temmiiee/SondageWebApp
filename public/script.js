@@ -161,12 +161,16 @@ class GameManager {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jeu: gameName })
       });
-      if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP error: ${response.status} - ${errorText}`);
+      }
       await this.loadData();
       this.elements.jeuForm.style.display = 'none';
       this.elements.jeuInput.value = '';
     } catch (error) {
       console.error("Erreur lors de l'ajout du jeu :", error);
+      alert(`Erreur lors de l'ajout du jeu : ${error.message}`);
     }
   }
 
@@ -186,10 +190,14 @@ class GameManager {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jeu: gameName })
       });
-      if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP error: ${response.status} - ${errorText}`);
+      }
       await this.loadData();
     } catch (error) {
       console.error("Erreur lors de l'ajout depuis la liste :", error);
+      alert(`Erreur lors de l'ajout depuis la liste : ${error.message}`);
     }
   }
 
@@ -201,10 +209,14 @@ class GameManager {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jeu: normalizedGameName })
       });
-      if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP error: ${response.status} - ${errorText}`);
+      }
       await this.loadData();
     } catch (error) {
       console.error('Erreur lors de la suppression du jeu :', error);
+      alert(`Erreur lors de la suppression du jeu : ${error.message}`);
     }
   }
 }  
