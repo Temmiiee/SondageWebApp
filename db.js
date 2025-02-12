@@ -95,6 +95,12 @@ export async function deleteVoteForUser(userId, jeuId) {
   );
 }
 
+export async function hasUserVoted(userId, jeuId) {
+  return handleRedis(() => 
+    redis.sismember(`user:${userId}:games`, jeuId)
+  );
+}
+
 export async function getUserGames(userId) {
   return handleRedis(async () => {
     const gameIds = await redis.smembers(`user:${userId}:games`);
